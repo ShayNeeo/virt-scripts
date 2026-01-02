@@ -2,8 +2,9 @@
 
 # ==============================================================================
 # Script Name: install-incus-debian13.sh
-# Description: Installs and configures Incus on Debian 13+ (Bookworm/Trixie)
-#              Uses official Debian packages from apt
+# Description: Installs and configures Incus on Debian 13+ (Trixie)
+#              Uses official Debian packages for incus
+#              Uses Zabbly repository for incus-ui-canonical
 # OS Support:  Debian 13+ (Trixie and later)
 # ==============================================================================
 
@@ -34,30 +35,55 @@ fi
 # ---------------------------------------------------------
 # Step 1: Update System and Install Dependencies
 # ---------------------------------------------------------
-echo -e "\n${GREEN}[1/6] Updating system and installing dependencies...${NC}"
+echo -e "\n${GREEN}[1/7] Updating system and installing dependencies...${NC}"
 apt update && apt upgrade -y
 apt install -y curl gpg btrfs-progs dnsmasq-base iptables nftables
 
 # ---------------------------------------------------------
 # Step 2: Enable vhost_vsock Module
 # ---------------------------------------------------------
-echo -e "${GREEN}[2/6] Enabling vhost_vsock kernel module...${NC}"
+echo -e "${GREEN}[2/7] Enabling vhost_vsock kernel module...${NC}"
 modprobe vhost_vsock
 if ! grep -q "vhost_vsock" /etc/modules; then
     echo "vhost_vsock" >> /etc/modules
 fi
 
 # ---------------------------------------------------------
-# Step 3: Install Incus from Official Debian Repositories
+# Step 3: Add Zabbly Repository for incus-ui-canonical
 # ---------------------------------------------------------
-echo -e "${GREEN}[3/6] Installing Incus from Debian repositories...${NC}"
-apt update
-apt install -y incus incus-ui-canonical
+echo -e "${GREEN}[3/7] Adding Zabbly repository for incus-ui-canonical...${NC}"
+mkdir -p /etc/apt/keyrings
+curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc
+
+# Add Zabbly repository
+sh -c 'cat <<EOF > /etc/apt/sources.list.d/zabbly-incus-stable.sources
+Enabled: yes
+Types: deb
+URIs: https://pkgs.zabbly.com/incus/stable
+Suites: $(. /etc/os-release && echo ${VERSION_CODENAME})
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/zabbly.asc
+
+EOF'
 
 # ---------------------------------------------------------
-# Step 4: Add Current User to incus-admin Group
+# Step 4: Install Incus from Official Debian Repositories
 # ---------------------------------------------------------
-echo -e "${GREEN}[4/6] Configuring user permissions...${NC}"
+echo -e "${GREEN}[4/7] Installing Incus from Debian repositories...${NC}"
+apt update
+apt install -y incus
+
+# ---------------------------------------------------------
+# Step 5: Install incus-ui-canonical from Zabbly Repository
+# ---------------------------------------------------------
+echo -e "${GREEN}[5/7] Installing incus-ui-canonical from Zabbly repository...${NC}"
+apt install -y incus-ui-canonical
+
+# ---------------------------------------------------------
+# Step 6: Add Current User to incus-admin Group
+# ---------------------------------------------------------
+echo -e "${GREEN}[6/7] Configuring user permissions...${NC}"
 CURRENT_USER=$(whoami)
 if [ "$CURRENT_USER" != "root" ]; then
     adduser "$CURRENT_USER" incus-admin
@@ -68,9 +94,9 @@ else
 fi
 
 # ---------------------------------------------------------
-# Step 5: Initialize Incus
+# Step 7: Initialize Incus
 # ---------------------------------------------------------
-echo -e "${GREEN}[5/6] Initializing Incus...${NC}"
+echo -e "${GREEN}[7/7] Initializing Incus...${NC}"
 echo -e "${YELLOW}You will be prompted to configure Incus. Recommended settings:${NC}"
 echo "  - Clustering: no"
 echo "  - New local storage pool: yes"
@@ -91,9 +117,9 @@ read -p "Press Enter to start initialization..."
 incus admin init
 
 # ---------------------------------------------------------
-# Step 6: Verification
+# Step 8: Verification
 # ---------------------------------------------------------
-echo -e "\n${GREEN}[6/6] Verifying installation...${NC}"
+echo -e "\n${GREEN}[8/8] Verifying installation...${NC}"
 if incus list >/dev/null 2>&1; then
     echo -e "${GREEN}✓ Incus is installed and configured successfully!${NC}"
     echo ""

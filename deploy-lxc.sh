@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ==============================================================================
-# Script Name: deploy-instance.sh
-# Description: Automates the creation of a Debian Trixie Incus container,
-#              configures SSH proxying, and enables root password login.
+# Script Name: deploy-lxc.sh
+# Description: Automates the creation of a Debian Incus container,
+#              configures SSH proxying with flexible authentication (password/SSH key/both)
 # Target Arch: Oracle A1.Flex (ARM64) / x86_64
 # ==============================================================================
 
@@ -37,6 +37,38 @@ read -p "Enter Debian version (trixie/bookworm/bullseye) [default: trixie]: " DE
 
 # Set default Debian version
 DEBIAN_VERSION=${DEBIAN_VERSION:-trixie}
+
+# Authentication method selection
+echo ""
+echo -e "${YELLOW}Select authentication method:${NC}"
+echo "  1) Password only"
+echo "  2) SSH key only"
+echo "  3) Both password and SSH key"
+read -p "Enter choice [1, 2, or 3]: " AUTH_METHOD
+
+if [[ ! "$AUTH_METHOD" =~ ^[123]$ ]]; then
+    echo -e "${RED}Invalid choice. Please enter 1, 2, or 3.${NC}"
+    exit 1
+fi
+
+# Get SSH public key if needed
+SSH_PUBLIC_KEY=""
+if [ "$AUTH_METHOD" -eq 2 ] || [ "$AUTH_METHOD" -eq 3 ]; then
+    echo ""
+    echo -e "${YELLOW}Please paste your SSH public key:${NC}"
+    echo "  (Example: ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB... user@host)"
+    read -p "SSH Public Key: " SSH_PUBLIC_KEY
+    
+    if [[ -z "$SSH_PUBLIC_KEY" ]]; then
+        echo -e "${RED}Error: SSH public key is required for this authentication method.${NC}"
+        exit 1
+    fi
+    
+    # Basic validation - check if it starts with ssh-rsa, ssh-ed25519, ecdsa, etc.
+    if [[ ! "$SSH_PUBLIC_KEY" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-dss) ]]; then
+        echo -e "${YELLOW}Warning: The key format may be invalid. Continuing anyway...${NC}"
+    fi
+fi
 
 # Basic Input Validation
 if [[ -z "$CONTAINER_NAME" || -z "$HOST_PORT" ]]; then
@@ -112,20 +144,63 @@ if ! incus exec "$CONTAINER_NAME" -- sh -c "apt install -y openssh-server >/dev/
 fi
 
 echo -e "${GREEN}[4/5] Configuring SSH Daemon...${NC}"
-# Enable Root Login and Password Auth
-incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config" || true
-incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config" || true
-incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config" || true
-incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config" || true
+
+# Configure SSH based on authentication method
+if [ "$AUTH_METHOD" -eq 1 ]; then
+    # Password only
+    echo "  > Configuring for password authentication only..."
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication no/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/PubkeyAuthentication yes/PubkeyAuthentication no/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "echo 'PubkeyAuthentication no' >> /etc/ssh/sshd_config" || true
+    
+elif [ "$AUTH_METHOD" -eq 2 ]; then
+    # SSH key only
+    echo "  > Configuring for SSH key authentication only..."
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PermitRootLogin yes/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/PermitRootLogin yes/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/PubkeyAuthentication no/PubkeyAuthentication yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config" || true
+    
+    # Setup SSH directory and authorized_keys
+    echo "  > Setting up SSH key..."
+    incus exec "$CONTAINER_NAME" -- sh -c "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
+    incus exec "$CONTAINER_NAME" -- sh -c "echo '${SSH_PUBLIC_KEY}' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+    
+else
+    # Both password and SSH key
+    echo "  > Configuring for both password and SSH key authentication..."
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "sed -i 's/PubkeyAuthentication no/PubkeyAuthentication yes/' /etc/ssh/sshd_config" || true
+    incus exec "$CONTAINER_NAME" -- sh -c "echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config" || true
+    
+    # Setup SSH directory and authorized_keys
+    echo "  > Setting up SSH key..."
+    incus exec "$CONTAINER_NAME" -- sh -c "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
+    incus exec "$CONTAINER_NAME" -- sh -c "echo '${SSH_PUBLIC_KEY}' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+fi
 
 echo -e "  ${GREEN}✓ SSH configured${NC}"
 
-# --- 5. User Interaction ---
-echo ""
-echo -e "${GREEN}--------------------------------------------------------${NC}"
-echo -e "${YELLOW}[Action Required] Please set the root password for the container.${NC}"
-echo -e "${GREEN}--------------------------------------------------------${NC}"
-incus exec "$CONTAINER_NAME" -- passwd root
+# --- 5. User Interaction (Password Setup) ---
+if [ "$AUTH_METHOD" -eq 1 ] || [ "$AUTH_METHOD" -eq 3 ]; then
+    echo ""
+    echo -e "${GREEN}--------------------------------------------------------${NC}"
+    echo -e "${YELLOW}[Action Required] Please set the root password for the container.${NC}"
+    echo -e "${GREEN}--------------------------------------------------------${NC}"
+    incus exec "$CONTAINER_NAME" -- passwd root
+fi
 
 echo ""
 echo "Restarting SSH service..."
@@ -147,7 +222,16 @@ echo "  IPv6:        ${CONTAINER_IPV6}"
 echo "  SSH Port:    ${HOST_PORT}"
 echo ""
 echo "Access your container via:"
-echo "  ssh root@<YOUR_ORACLE_PUBLIC_IP> -p ${HOST_PORT}"
+if [ "$AUTH_METHOD" -eq 1 ]; then
+    echo "  ssh root@<YOUR_PUBLIC_IP> -p ${HOST_PORT}"
+    echo "  (Use password authentication)"
+elif [ "$AUTH_METHOD" -eq 2 ]; then
+    echo "  ssh root@<YOUR_PUBLIC_IP> -p ${HOST_PORT}"
+    echo "  (Use SSH key authentication)"
+else
+    echo "  ssh root@<YOUR_PUBLIC_IP> -p ${HOST_PORT}"
+    echo "  (Use password or SSH key authentication)"
+fi
 echo ""
 echo "Or from within the host:"
 echo "  incus exec ${CONTAINER_NAME} -- bash"

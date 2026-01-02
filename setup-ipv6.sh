@@ -35,27 +35,57 @@ fi
 
 # Input Prompt
 echo ""
-echo "Please enter your Oracle IPv6 /80 Prefix."
-echo "Example: 2603:c024:4518:1400:1::"
-read -p "Prefix: " USER_PREFIX
+echo "Please enter your IPv6 Prefix with CIDR notation."
+echo "Examples:"
+echo "  - 2603:c024:4518:1400:1::/80  (Oracle /80)"
+echo "  - 2001:db8::/64               (Standard /64)"
+echo "  - 2001:db8:1234::/48          (Larger /48)"
+read -p "Prefix (with CIDR): " USER_PREFIX
 
+# Validate input contains colon (IPv6 format)
 if [[ ! "$USER_PREFIX" =~ : ]]; then
     echo -e "${RED}Invalid IPv6 format.${NC}"
     exit 1
 fi
 
-# Clean input
-CLEAN_PREFIX=$(echo "$USER_PREFIX" | sed 's|/80||g' | sed 's|::$||g')
+# Extract prefix and CIDR
+if [[ "$USER_PREFIX" =~ /([0-9]+)$ ]]; then
+    PREFIX_CIDR="${BASH_REMATCH[1]}"
+    PREFIX_ADDR="${USER_PREFIX%/*}"
+else
+    echo -e "${RED}Invalid format. Please include CIDR notation (e.g., /80, /64).${NC}"
+    exit 1
+fi
+
+# Validate CIDR is between 48 and 128
+if ! [[ "$PREFIX_CIDR" =~ ^[0-9]+$ ]] || [ "$PREFIX_CIDR" -lt 48 ] || [ "$PREFIX_CIDR" -gt 128 ]; then
+    echo -e "${RED}Invalid CIDR. Please use a value between 48 and 128.${NC}"
+    exit 1
+fi
+
+# Clean prefix address (remove trailing ::)
+CLEAN_PREFIX=$(echo "$PREFIX_ADDR" | sed 's|::$||g' | sed 's|:$||g')
+
+# Calculate bridge subnet CIDR (add 16 bits for bridge subnet)
+# This gives us a /96 for /80, /80 for /64, /64 for /48, etc.
+BRIDGE_CIDR=$((PREFIX_CIDR + 16))
+
+# Validate bridge CIDR doesn't exceed 128
+if [ "$BRIDGE_CIDR" -gt 128 ]; then
+    BRIDGE_CIDR=128
+fi
 
 # Define Subnets
 HOST_IP="${CLEAN_PREFIX}::1"
-BRIDGE_SUBNET="${CLEAN_PREFIX}:1::1/96"
-HOST_SUBNET="${CLEAN_PREFIX}::/80"
+BRIDGE_SUBNET="${CLEAN_PREFIX}:1::1/${BRIDGE_CIDR}"
+HOST_SUBNET="${CLEAN_PREFIX}::/${PREFIX_CIDR}"
 
 echo -e "\n${YELLOW}Configuration Target:${NC}"
 echo -e "  Interface:      ${DEFAULT_IFACE}"
+echo -e "  Prefix CIDR:    /${PREFIX_CIDR}"
 echo -e "  Host IP:        ${HOST_IP} (/128)"
-echo -e "  Incus Subnet:   ${BRIDGE_SUBNET}"
+echo -e "  Host Subnet:    ${HOST_SUBNET}"
+echo -e "  Incus Subnet:   ${BRIDGE_SUBNET} (/${BRIDGE_CIDR})"
 echo -e "----------------------------------------"
 read -p "Press Enter to apply configuration..."
 
@@ -92,7 +122,7 @@ ip -6 addr add "${HOST_IP}/128" dev "$DEFAULT_IFACE" 2>/dev/null || true
 # Add Default Gateway (Standard OCI Link-Local Gateway)
 ip -6 route add default via fe80::1 dev "$DEFAULT_IFACE" 2>/dev/null || true
 
-# Route the rest of the /80 upstream to prevent loops
+# Route the rest of the prefix upstream to prevent loops
 ip -6 route add "${HOST_SUBNET}" via fe80::1 dev "$DEFAULT_IFACE" 2>/dev/null || true
 
 # Persistence for /etc/network/interfaces (Debian)
@@ -107,7 +137,7 @@ iface $DEFAULT_IFACE inet6 static
     netmask 128
     gateway fe80::1
     accept_ra 2
-    # Route rest of /80 to gateway
+    # Route rest of prefix (/${PREFIX_CIDR}) to gateway
     up ip -6 route add ${HOST_SUBNET} via fe80::1 dev $DEFAULT_IFACE
 EOF
     fi
@@ -190,9 +220,14 @@ fi
 
 echo -e "\n${GREEN}=== SETUP COMPLETE ===${NC}"
 echo ""
+echo "Configuration Summary:"
+echo "  Prefix:         ${CLEAN_PREFIX}::/${PREFIX_CIDR}"
+echo "  Host IP:        ${HOST_IP}/128"
+echo "  Bridge Subnet:  ${BRIDGE_SUBNET}"
+echo ""
 echo "You can now assign static IPs to containers:"
 echo "  1. incus launch images:debian/trixie/cloud my-app"
 echo "  2. incus config device override my-app eth0 ipv6.address=${CLEAN_PREFIX}:1:1::100"
 echo "  3. incus restart my-app"
 echo ""
-echo "Or use the deploy-instance.sh script to create containers with SSH access."
+echo "Or use the deploy-lxc.sh script to create containers with SSH access."

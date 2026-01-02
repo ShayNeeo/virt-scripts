@@ -80,11 +80,33 @@ HOST_IP="${CLEAN_PREFIX}::1"
 BRIDGE_SUBNET="${CLEAN_PREFIX}:1::1/${BRIDGE_CIDR}"
 HOST_SUBNET="${CLEAN_PREFIX}::/${PREFIX_CIDR}"
 
+# Gateway Configuration
+echo ""
+echo "IPv6 Gateway Configuration:"
+echo "  Default: fe80::1 (Standard OCI Link-Local Gateway)"
+echo "  Custom:   Enter your specific IPv6 gateway address"
+read -p "Gateway [default: fe80::1] or press Enter for default: " USER_GATEWAY
+
+# Set default gateway if empty
+if [[ -z "$USER_GATEWAY" ]]; then
+    IPV6_GATEWAY="fe80::1"
+    echo -e "${YELLOW}Using default gateway: fe80::1${NC}"
+else
+    # Validate gateway format
+    if [[ ! "$USER_GATEWAY" =~ : ]]; then
+        echo -e "${RED}Invalid IPv6 gateway format.${NC}"
+        exit 1
+    fi
+    IPV6_GATEWAY="$USER_GATEWAY"
+    echo -e "${GREEN}Using custom gateway: ${IPV6_GATEWAY}${NC}"
+fi
+
 echo -e "\n${YELLOW}Configuration Target:${NC}"
 echo -e "  Interface:      ${DEFAULT_IFACE}"
 echo -e "  Prefix CIDR:    /${PREFIX_CIDR}"
 echo -e "  Host IP:        ${HOST_IP} (/128)"
 echo -e "  Host Subnet:    ${HOST_SUBNET}"
+echo -e "  Gateway:        ${IPV6_GATEWAY}"
 echo -e "  Incus Subnet:   ${BRIDGE_SUBNET} (/${BRIDGE_CIDR})"
 echo -e "----------------------------------------"
 read -p "Press Enter to apply configuration..."
@@ -119,11 +141,15 @@ ip -6 addr flush dev "$DEFAULT_IFACE" scope global 2>/dev/null || true
 # Add Host IP as /128 (Prevents "Whole Subnet" ownership)
 ip -6 addr add "${HOST_IP}/128" dev "$DEFAULT_IFACE" 2>/dev/null || true
 
-# Add Default Gateway (Standard OCI Link-Local Gateway)
-ip -6 route add default via fe80::1 dev "$DEFAULT_IFACE" 2>/dev/null || true
+# Remove existing default route if it exists
+ip -6 route del default dev "$DEFAULT_IFACE" 2>/dev/null || true
+
+# Add Default Gateway (Custom or default)
+ip -6 route add default via "${IPV6_GATEWAY}" dev "$DEFAULT_IFACE" 2>/dev/null || true
 
 # Route the rest of the prefix upstream to prevent loops
-ip -6 route add "${HOST_SUBNET}" via fe80::1 dev "$DEFAULT_IFACE" 2>/dev/null || true
+ip -6 route del "${HOST_SUBNET}" dev "$DEFAULT_IFACE" 2>/dev/null || true
+ip -6 route add "${HOST_SUBNET}" via "${IPV6_GATEWAY}" dev "$DEFAULT_IFACE" 2>/dev/null || true
 
 # Persistence for /etc/network/interfaces (Debian)
 if [ -f /etc/network/interfaces ]; then
@@ -135,10 +161,10 @@ if [ -f /etc/network/interfaces ]; then
 iface $DEFAULT_IFACE inet6 static
     address ${HOST_IP}
     netmask 128
-    gateway fe80::1
+    gateway ${IPV6_GATEWAY}
     accept_ra 2
     # Route rest of prefix (/${PREFIX_CIDR}) to gateway
-    up ip -6 route add ${HOST_SUBNET} via fe80::1 dev $DEFAULT_IFACE
+    up ip -6 route add ${HOST_SUBNET} via ${IPV6_GATEWAY} dev $DEFAULT_IFACE
 EOF
     fi
 fi
@@ -223,6 +249,7 @@ echo ""
 echo "Configuration Summary:"
 echo "  Prefix:         ${CLEAN_PREFIX}::/${PREFIX_CIDR}"
 echo "  Host IP:        ${HOST_IP}/128"
+echo "  Gateway:       ${IPV6_GATEWAY}"
 echo "  Bridge Subnet:  ${BRIDGE_SUBNET}"
 echo ""
 echo "You can now assign static IPs to containers:"

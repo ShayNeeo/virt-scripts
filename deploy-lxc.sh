@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Script Name: deploy-lxc.sh
-# Description: Automates the creation of a Debian Incus container,
+# Description: Automates the creation of Linux Incus containers (Debian/Ubuntu/Alpine),
 #              configures SSH proxying with flexible authentication (password/SSH key/both)
 # Target Arch: Oracle A1.Flex (ARM64) / x86_64
 # ==============================================================================
@@ -15,7 +15,7 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== Deploy Debian Incus Container ===${NC}"
+echo -e "${GREEN}=== Deploy Linux Incus Container ===${NC}"
 
 # Check if Incus is installed
 if ! command -v incus >/dev/null 2>&1; then
@@ -33,10 +33,44 @@ fi
 echo ""
 read -p "Enter the new Container Name: " CONTAINER_NAME
 read -p "Enter the Host Port for SSH Proxy (e.g., 2222): " HOST_PORT
-read -p "Enter Debian version (trixie/bookworm/bullseye) [default: trixie]: " DEBIAN_VERSION
 
-# Set default Debian version
-DEBIAN_VERSION=${DEBIAN_VERSION:-trixie}
+# OS Selection
+echo ""
+echo -e "${YELLOW}Select container OS:${NC}"
+echo "  1) Debian"
+echo "  2) Ubuntu"
+echo "  3) Alpine"
+read -p "Enter choice [1, 2, or 3]: " OS_CHOICE
+
+if [[ ! "$OS_CHOICE" =~ ^[123]$ ]]; then
+    echo -e "${RED}Invalid choice. Please enter 1, 2, or 3.${NC}"
+    exit 1
+fi
+
+# Version selection based on OS
+case "$OS_CHOICE" in
+    1)
+        OS_TYPE="debian"
+        echo ""
+        read -p "Enter Debian version (trixie/bookworm/bullseye) [default: trixie]: " OS_VERSION
+        OS_VERSION=${OS_VERSION:-trixie}
+        IMAGE_NAME="images:debian/${OS_VERSION}/cloud"
+        ;;
+    2)
+        OS_TYPE="ubuntu"
+        echo ""
+        read -p "Enter Ubuntu version (24.04/22.04/20.04) [default: 24.04]: " OS_VERSION
+        OS_VERSION=${OS_VERSION:-24.04}
+        IMAGE_NAME="images:ubuntu/${OS_VERSION}/cloud"
+        ;;
+    3)
+        OS_TYPE="alpine"
+        echo ""
+        read -p "Enter Alpine version (3.19/3.18/edge) [default: 3.19]: " OS_VERSION
+        OS_VERSION=${OS_VERSION:-3.19}
+        IMAGE_NAME="images:alpine/${OS_VERSION}"
+        ;;
+esac
 
 # Authentication method selection
 echo ""
@@ -97,13 +131,13 @@ fi
 echo ""
 echo -e "${GREEN}--------------------------------------------------------${NC}"
 echo -e "${GREEN}Initializing deployment for '${CONTAINER_NAME}' on Port ${HOST_PORT}...${NC}"
-echo -e "${GREEN}Debian Version: ${DEBIAN_VERSION}${NC}"
+echo -e "${GREEN}OS: ${OS_TYPE^} ${OS_VERSION}${NC}"
 echo -e "${GREEN}--------------------------------------------------------${NC}"
 
 # --- 2. Container Creation ---
-# Using the 'images' remote which contains the community Debian images.
-echo -e "\n${GREEN}[1/5] Launching Debian ${DEBIAN_VERSION} container...${NC}"
-if ! incus launch images:debian/${DEBIAN_VERSION}/cloud "$CONTAINER_NAME"; then
+# Using the 'images' remote which contains community Linux images.
+echo -e "\n${GREEN}[1/5] Launching ${OS_TYPE^} ${OS_VERSION} container...${NC}"
+if ! incus launch "$IMAGE_NAME" "$CONTAINER_NAME"; then
     echo -e "${RED}Error: Failed to launch container. Check if the image exists.${NC}"
     exit 1
 fi
@@ -135,12 +169,29 @@ echo -e "  ${GREEN}✓ SSH proxy configured on port ${HOST_PORT}${NC}"
 
 # --- 4. System Provisioning ---
 echo -e "${GREEN}[4/5] Updating system and installing SSH...${NC}"
-echo "  > Updating package lists..."
-incus exec "$CONTAINER_NAME" -- sh -c "apt update >/dev/null 2>&1" || true
 
-echo "  > Installing openssh-server..."
-if ! incus exec "$CONTAINER_NAME" -- sh -c "apt install -y openssh-server >/dev/null 2>&1"; then
-    echo -e "${YELLOW}  > Warning: SSH installation had issues, but continuing...${NC}"
+# Install SSH based on OS type
+if [ "$OS_TYPE" = "alpine" ]; then
+    # Alpine uses apk
+    echo "  > Updating package index..."
+    incus exec "$CONTAINER_NAME" -- sh -c "apk update >/dev/null 2>&1" || true
+    
+    echo "  > Installing openssh..."
+    if ! incus exec "$CONTAINER_NAME" -- sh -c "apk add -q openssh >/dev/null 2>&1"; then
+        echo -e "${YELLOW}  > Warning: SSH installation had issues, but continuing...${NC}"
+    fi
+    
+    # Alpine needs sshd service enabled
+    incus exec "$CONTAINER_NAME" -- sh -c "rc-update add sshd 2>/dev/null || true" || true
+else
+    # Debian/Ubuntu use apt
+    echo "  > Updating package lists..."
+    incus exec "$CONTAINER_NAME" -- sh -c "apt update >/dev/null 2>&1" || true
+    
+    echo "  > Installing openssh-server..."
+    if ! incus exec "$CONTAINER_NAME" -- sh -c "apt install -y openssh-server >/dev/null 2>&1"; then
+        echo -e "${YELLOW}  > Warning: SSH installation had issues, but continuing...${NC}"
+    fi
 fi
 
 echo -e "${GREEN}[4/5] Configuring SSH Daemon...${NC}"
@@ -204,7 +255,12 @@ fi
 
 echo ""
 echo "Restarting SSH service..."
-incus exec "$CONTAINER_NAME" -- systemctl restart ssh || incus exec "$CONTAINER_NAME" -- service ssh restart || true
+# Restart SSH service based on OS type
+if [ "$OS_TYPE" = "alpine" ]; then
+    incus exec "$CONTAINER_NAME" -- sh -c "rc-service sshd restart 2>/dev/null || service sshd restart 2>/dev/null || true" || true
+else
+    incus exec "$CONTAINER_NAME" -- sh -c "systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null || true" || true
+fi
 
 # Get container IP addresses
 CONTAINER_IPV4=$(incus list "$CONTAINER_NAME" -c 4 --format csv | head -n1 | awk '{print $1}' || echo "N/A")
@@ -217,6 +273,7 @@ echo -e "${GREEN}--------------------------------------------------------${NC}"
 echo ""
 echo "Container Information:"
 echo "  Name:        ${CONTAINER_NAME}"
+echo "  OS:          ${OS_TYPE^} ${OS_VERSION}"
 echo "  IPv4:        ${CONTAINER_IPV4}"
 echo "  IPv6:        ${CONTAINER_IPV6}"
 echo "  SSH Port:    ${HOST_PORT}"

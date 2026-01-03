@@ -41,12 +41,17 @@ if ! incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
     exit 1
 fi
 
-# Check if container is running
-CONTAINER_STATE=$(incus info "$CONTAINER_NAME" | grep "Status:" | awk '{print $2}' || echo "STOPPED")
-if [ "$CONTAINER_STATE" != "Running" ]; then
-    echo -e "${YELLOW}Container is not running. Starting container...${NC}"
-    incus start "$CONTAINER_NAME"
+# Ensure container is running (start if needed, ignore "already running" error)
+START_OUTPUT=$(incus start "$CONTAINER_NAME" 2>&1)
+START_EXIT=$?
+if [ $START_EXIT -eq 0 ]; then
+    echo -e "  ${GREEN}✓ Container started${NC}"
     sleep 3
+elif echo "$START_OUTPUT" | grep -q "already running"; then
+    echo -e "  ${GREEN}✓ Container is already running${NC}"
+else
+    echo -e "${YELLOW}Warning: Could not start container: $START_OUTPUT${NC}"
+    echo -e "${YELLOW}Continuing anyway...${NC}"
 fi
 
 echo ""

@@ -42,8 +42,11 @@ if ! incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
 fi
 
 # Ensure container is running (start if needed, ignore "already running" error)
+set +e  # Temporarily disable exit on error for this check
 START_OUTPUT=$(incus start "$CONTAINER_NAME" 2>&1)
 START_EXIT=$?
+set -e  # Re-enable exit on error
+
 if [ $START_EXIT -eq 0 ]; then
     echo -e "  ${GREEN}✓ Container started${NC}"
     sleep 3

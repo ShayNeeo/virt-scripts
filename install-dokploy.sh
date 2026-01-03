@@ -35,14 +35,15 @@ echo ""
 read -p "Enter the Container Name (must exist): " CONTAINER_NAME
 
 # Validate container exists
-if ! incus list -c n | grep -q "^${CONTAINER_NAME}$"; then
+if ! incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
     echo -e "${RED}Error: Container '${CONTAINER_NAME}' does not exist.${NC}"
     echo -e "${YELLOW}Please create the container first using deploy-lxc.sh${NC}"
     exit 1
 fi
 
 # Check if container is running
-if ! incus list -c ns | grep -q "${CONTAINER_NAME}.*RUNNING"; then
+CONTAINER_STATE=$(incus info "$CONTAINER_NAME" | grep "Status:" | awk '{print $2}' || echo "STOPPED")
+if [ "$CONTAINER_STATE" != "Running" ]; then
     echo -e "${YELLOW}Container is not running. Starting container...${NC}"
     incus start "$CONTAINER_NAME"
     sleep 3
